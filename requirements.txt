@@ -5,4 +5,4 @@ jax
 jax==0.4.20
 matplot
 jaxlib
-
+Python >=3.10
