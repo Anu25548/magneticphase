@@ -1,0 +1,12 @@
+python 
+numpy
+scipy
+jax
+jax==0.4.23
+matplot
+jaxlib
+git add requirements.txt
+git commit -m "Add jax to requirements"
+git push
+
+

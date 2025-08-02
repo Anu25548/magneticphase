@@ -1,5 +1,0 @@
-python 
-numpy
-scipy
-jax
-matplot
