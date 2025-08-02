@@ -1,7 +1,6 @@
-python 
+
 numpy
 scipy
-jax
 jax==0.4.20
 matplot
 jaxlib
