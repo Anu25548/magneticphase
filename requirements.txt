@@ -5,6 +5,4 @@ scipy
 matplotlib
 streamlit 
 imageio
-os
 pandas
-python==3.11
