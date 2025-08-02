@@ -1,7 +1,6 @@
-
+jax==0.7.0
+jaxlib==0.7.0
 numpy
 scipy
-jax==0.4.23
 matplot
-jaxlib==0.4.23
 streamlit 
