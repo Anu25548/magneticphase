@@ -3,5 +3,5 @@ numpy
 scipy
 jax==0.4.20
 matplot
-jaxlib
+jaxlib==0.4.20
 streamlit 
