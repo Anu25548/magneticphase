@@ -2,7 +2,7 @@ python
 numpy
 scipy
 jax
-jax==0.4.23
+jax==0.4.20
 matplot
 jaxlib
 
