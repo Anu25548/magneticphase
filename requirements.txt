@@ -2,6 +2,9 @@ jax==0.7.0
 jaxlib==0.7.0
 numpy
 scipy
-matplot
+matplotlib
 streamlit 
 imageio
+os
+pandas
+
