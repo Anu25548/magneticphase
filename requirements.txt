@@ -6,3 +6,10 @@ matplotlib
 streamlit 
 imageio
 pandas
+streamlit-webrtc
+plotly
+av
+wavio
+openai
+sounddevice
+pyttsx3
