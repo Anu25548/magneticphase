@@ -143,7 +143,7 @@ with tabs[2]:
 
     ctx = webrtc_streamer(
         key="voice-ising",
-        mode="WebRtcMode.SENDONLY",
+        mode=WebRtcMode.SENDONLY,
         audio_processor_factory=Recorder,
         rtc_configuration=RTCConfiguration({"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}),
         media_stream_constraints={"audio": True},
@@ -199,6 +199,7 @@ with tabs[3]:
     👉 In viva, you can say: *"Alexa cannot run scientific simulations. My AI is a research-specific tutor that actually computes, visualizes, and explains physics transitions."*
     """)
     
+
 
 
 
