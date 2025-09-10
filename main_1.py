@@ -26,7 +26,7 @@ import openai
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY:
-    openai.api_key = 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
+    openai.api_key = "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"
 
 st.set_page_config(page_title="Ising AI Tutor", layout="wide")
 
@@ -199,4 +199,5 @@ with tabs[3]:
     👉 In viva, you can say: *"Alexa cannot run scientific simulations. My AI is a research-specific tutor that actually computes, visualizes, and explains physics transitions."*
     """)
     
+
 
