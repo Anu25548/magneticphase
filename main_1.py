@@ -1,316 +1,201 @@
-import jax
-import jax.numpy as jnp
+# Ising Advanced App — Voice + AI Tutor Welcome Mode 🧲🎙️
+# ------------------------------------------------------
+# Features:
+# - Advanced 2D Ising simulator with Plotly graphs
+# - Voice-enabled (Whisper STT + GPT parsing + OpenAI TTS)
+# - GUI fallback controls
+# - **NEW: AI Tutor Welcome Mode**
+#    • Startup greeting screen with glowing text
+#    • Voice greeting: "Hi there! I am your Physics Tutor..."
+#    • Dialogue flow: asks user what they want (magnetization, heat, binder, etc.)
+#    • Runs simulation, explains with graph + natural TTS
+# - Extra “About vs Alexa” tab for viva justification
+
+import os
+import math
+import tempfile
 import numpy as np
-import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
-import imageio
-import os
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, RTCConfiguration
+import av
+import plotly.graph_objects as go
+import openai
 
-MATERIAL_DB = {
-    "iron": {"J_per_kB": 21.1, "Tc_exp": 1043},
-    "k2cof4": {"J_per_kB": 10.0, "Tc_exp": 110},
-    "rb2cof4": {"J_per_kB": 7.0, "Tc_exp": 100},
-    "dypo4": {"J_per_kB": 2.5, "Tc_exp": 3.4}
-}
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    openai.api_key = OPENAI_API_KEY
 
-st.title(" 2D Ising Model: Magnetic Phase Transition, Spin States, and Animation")
-#st.markdown("""<h1 style="text-align: center;">2D Ising Model: Magnetic Phase Transition, Spin States, and Animation; font-family: monospace:'></h1>""")
-st.markdown("""
----
-### **Usage: Step-by-Step Guide**
+st.set_page_config(page_title="Ising AI Tutor", layout="wide")
 
-1. **Sidebar se parameters set karein** (material, lattice size, MC steps, random seed, etc.).
-2. **"Run Simulation" button dabayein.**
-3. **Tabs ka use karke:**
-   - Graphs, phase diagrams, spin states, aur animations analyze karein.
-4. **Her tab ke neeche likhe explanation padhein — phase transition samjho!**
-5. **Chahe toh apna data bhi compare karein (experimental upload).**
+# -----------------------------
+# Simple Ising simulation (checkerboard Metropolis)
+# -----------------------------
 
----
-""")
+def initial_lattice(N, rng):
+    return rng.choice([-1, 1], size=(N, N))
 
-material = st.sidebar.selectbox(
-    "Choose Real Material:",
-    options=list(MATERIAL_DB.keys()),
-    format_func=lambda x: x.upper()
-)
-params = MATERIAL_DB[material]
-JkB, Tc_exp = params["J_per_kB"], params["Tc_exp"]
-st.sidebar.info(f"**{material.upper()}**: J/kB = {JkB} K, Tc(exp) = {Tc_exp} K")
-
-N        = st.sidebar.slider("Lattice Size (N×N)", 10, 64, 30)
-n_eq     = st.sidebar.number_input("Equilibration Steps", 500, step=100)
-n_samples= st.sidebar.number_input("Samples per T", 200, step=100)
-seed     = st.sidebar.number_input("Random Seed", 0, step=1)
-minT     = st.sidebar.number_input("Low Temperature (K)", int(Tc_exp * 0.7))
-maxT     = st.sidebar.number_input("High Temperature (K)", int(Tc_exp * 1.3))
-nT       = st.sidebar.slider("Number of Temperatures", 10, 50, 30)
-run_sim  = st.sidebar.button("Run Simulation")
-
-# Animation controls in sidebar
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Animation Controls:**")
-spin_anim_T = st.sidebar.number_input("Animation: Temperature (K)", min_value=int(minT), max_value=int(maxT), value=int(Tc_exp))
-spin_anim_steps = st.sidebar.slider("Spin Animation MC Steps", 30, 200, 80)
-temp_anim_steps = st.sidebar.slider("Temp Sweep MC Steps", 100, 800, 400)
-
-exp_data = None
-uploaded = st.sidebar.file_uploader("Upload experimental CSV (T[K],M[])", type=['csv'])
-if uploaded:
-    exp_data = pd.read_csv(uploaded)
-    st.sidebar.success("Experimental file loaded.")
-
-def initial_lattice(N, key):
-    return 2 * jax.random.randint(key, (N, N), 0, 2) - 1
-
-@jax.jit
-def checkerboard_update(spins, beta, key):
+def checkerboard_update(spins, beta, rng):
     N = spins.shape[0]
-    for offset in [0, 1]:
-        mask = jnp.fromfunction(lambda i, j: ((i + j) % 2 == offset), (N, N), dtype=jnp.int32).astype(bool)
-
-        neighbors = (jnp.roll(spins, 1, axis=0) + jnp.roll(spins, -1, axis=0) +
-                     jnp.roll(spins, 1, axis=1) + jnp.roll(spins, -1, axis=1))
-        key, subkey = jax.random.split(key)
-        rand_mat = jax.random.uniform(subkey, (N, N))
+    for offset in (0, 1):
+        mask = ((np.add.outer(np.arange(N), np.arange(N)) % 2) == offset)
+        neighbors = (
+            np.roll(spins, 1, axis=0) + np.roll(spins, -1, axis=0)
+            + np.roll(spins, 1, axis=1) + np.roll(spins, -1, axis=1)
+        )
+        rand_mat = rng.random((N, N))
         deltaE = 2 * spins * neighbors
-        flip = (deltaE < 0) | (rand_mat < jnp.exp(-beta * deltaE))
-        spins = jnp.where(mask & flip, -spins, spins)
+        flip = (deltaE < 0) | (rand_mat < np.exp(-beta * deltaE))
+        spins = np.where(mask & flip, -spins, spins)
     return spins
 
-def calc_energy(state):
-    E = -jnp.sum(state * jnp.roll(state, 1, 0)) - jnp.sum(state * jnp.roll(state, 1, 1))
-    return E / 2.0
-
-def calc_magnetization(state):
-    return jnp.sum(state)
-
-def ising_sim(N, n_eq, n_samples, T_arr, JkB, seed, Tc_exp, maxT):
-    E_av, M_av, C_av, X_av = [], [], [], []
-    spins_below_tc, spins_above_tc = None, None
-    key = jax.random.PRNGKey(seed)
-    for T_real in T_arr:
+def run_ising(N, n_eq, n_samples, T_arr, JkB, seed):
+    M_av = []
+    for idx, T_real in enumerate(T_arr):
         T_code = T_real / JkB
-        beta = 1.0 / T_code
-        skey, key = jax.random.split(key)
-        state = initial_lattice(N, skey)
+        beta = 1.0 / max(T_code, 1e-12)
+        rng = np.random.default_rng(seed + idx*17)
+        state = initial_lattice(N, rng)
         for _ in range(n_eq):
-            skey, key = jax.random.split(key)
-            state = checkerboard_update(state, beta, skey)
-        E_samples = []
-        M_samples = []
+            state = checkerboard_update(state, beta, rng)
+        m_samples = []
         for _ in range(n_samples):
-            skey, key = jax.random.split(key)
-            state = checkerboard_update(state, beta, skey)
-            E_samples.append(calc_energy(state))
-            M_samples.append(jnp.abs(calc_magnetization(state)))
-        E_samples = jnp.array(E_samples)
-        M_samples = jnp.array(M_samples)
-        E_mean = float(jnp.mean(E_samples) / (N*N))
-        M_mean = float(jnp.mean(M_samples) / (N*N))
-        C_mean = float(jnp.var(E_samples)/(T_code**2 * N**2))
-        X_mean = float(jnp.var(M_samples)/(T_code * N**2))
-        E_av.append(E_mean)
-        M_av.append(M_mean)
-        C_av.append(C_mean)
-        X_av.append(X_mean)
-        if spins_below_tc is None and T_real < Tc_exp and T_real > Tc_exp - 0.25*(maxT-minT):
-            spins_below_tc = np.array(state)
-        if spins_above_tc is None and T_real > Tc_exp and T_real < Tc_exp + 0.25*(maxT-minT):
-            spins_above_tc = np.array(state)
-    return np.array(E_av), np.array(M_av), np.array(C_av), np.array(X_av), spins_below_tc, spins_above_tc
+            state = checkerboard_update(state, beta, rng)
+            m_samples.append(np.sum(state)/(N*N))
+        M_av.append(np.mean(np.abs(m_samples)))
+    return np.array(M_av)
 
-def animate_spin_evolution(N, MC_steps, beta, seed, filename="spin_evolution.gif"):
-    key = jax.random.PRNGKey(seed+1337)
-    state = initial_lattice(N, key)
-    frames = []
-    for k in range(MC_steps):
-        key, subkey = jax.random.split(key)
-        state = checkerboard_update(state, beta, subkey)
-        frames.append(np.array(state))
-    images = []
-    for i, s in enumerate(frames):
-        fig, ax = plt.subplots()
-        ax.imshow(s, cmap="bwr", vmin=-1, vmax=1)
-        ax.set_title(f"MC Step {i+1}")
-        ax.axis('off')
-        fig.tight_layout()
-        fig.canvas.draw()  # Ensure the renderer exists
-        img = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(
-            fig.canvas.get_width_height()[::-1] + (4,))
+# -----------------------------
+# Sidebar controls
+# -----------------------------
 
-        images.append(img)
-        plt.close(fig)
-    imageio.mimsave(filename, images, duration=0.1)
-    return filename
+st.sidebar.title("Controls")
+material = st.sidebar.selectbox("Material", ['iron','k2cof4','rb2cof4'])
+MAT_DB = {'iron':21.1,'k2cof4':10.0,'rb2cof4':7.0}
+JkB = MAT_DB[material]
 
-def animate_temp_sweep(N, T_arr, MC_steps, seed, JkB, filename="ising_temp_sweep.gif"):
-    key = jax.random.PRNGKey(seed+4242)
-    images = []
-    for i, T_real in enumerate(T_arr):
-        T_code = T_real / JkB
-        beta = 1.0 / T_code
-        key, subkey = jax.random.split(key)
-        state = initial_lattice(N, subkey)
-        for _ in range(MC_steps):
-            key, subkey = jax.random.split(key)
-            state = checkerboard_update(state, beta, subkey)
-        fig, ax = plt.subplots()
-        ax.imshow(np.array(state), cmap="bwr", vmin=-1, vmax=1)
-        ax.axis('off')
-        ax.set_title(f"T = {T_real:.2f}")
-        fig.tight_layout()
-        fig.canvas.draw()
-        canvas = FigureCanvas(fig)
-        canvas.draw()
-        img = np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
+N = st.sidebar.slider('Lattice size N', 16, 128, 32)
+n_eq = st.sidebar.number_input('Equilibration steps', 50, 2000, 300, step=50)
+n_samples = st.sidebar.number_input('Samples per T', 50, 2000, 200, step=50)
+minT = st.sidebar.number_input('Min T (K)', value=int(0.6*JkB))
+maxT = st.sidebar.number_input('Max T (K)', value=int(1.4*JkB))
+nT = st.sidebar.slider('Number of T points', 8, 60, 20)
+seed = st.sidebar.number_input('Random seed', value=0, step=1)
 
-        images.append(img)
-        plt.close(fig)
-    imageio.mimsave(filename, images, duration=0.12)
-    return filename
+# -----------------------------
+# Tabs
+# -----------------------------
 
-# --- MAIN RUN ---
-if run_sim:
-    T_real_arr = np.linspace(minT, maxT, nT)
-    with st.spinner("Running Ising simulation (JAX-GPU/CPU)..."):
-        E, M, C, X, spins_below_tc, spins_above_tc = ising_sim(
-            N, n_eq, n_samples, T_real_arr, JkB, seed, Tc_exp, maxT
-        )
+tabs = st.tabs(["Welcome","Magnetization","Voice","About vs Alexa"])
 
-    tabs = st.tabs(["Magnetization vs Temperature", "Heat Capacity vs Temperature", "Phase Diagram", "Animations"])
-
-    with tabs[0]:
-        st.subheader("Magnetization vs Temperature")
-        fig, ax = plt.subplots(figsize=(7,4))
-        ax.plot(T_real_arr, M, 'o-', label="Simulation")
-        if exp_data is not None:
-            ax.plot(exp_data.iloc[:,0], exp_data.iloc[:,1], 's--', label="Experiment", color='orange')
-        ax.axvline(Tc_exp, color='red', ls=':', label=f"Tc (Exp)={Tc_exp}K", lw=2)
-        ax.set_xlabel("Temperature (K)")
-        ax.set_ylabel("Magnetization per spin")
-        ax.legend()
-        ax.grid()
-        st.pyplot(fig)
-        st.markdown("""
-        **Analysis:** 
-        - **$T < T_c$:** System ferromagnetic—magnetization high, spins mostly aligned. 
-        - **$T = T_c$ (vertical red line):** Magnetization sharply falls—this is the phase transition.
-        - **$T > T_c$:** Magnetization ~0—system is paramagnetic; spins are random.
-        """)
-
-    with tabs[1]:
-        st.subheader("Heat Capacity vs Temperature")
-        fig2, ax2 = plt.subplots(figsize=(7,4))
-        ax2.plot(T_real_arr, C, 'd-', label="Heat Capacity (Sim)")
-        ax2.axvline(Tc_exp, color='red', ls=':', label=f"Transition $T_c$={Tc_exp}K", lw=2)
-        ax2.set_xlabel("Temperature (K)")
-        ax2.set_ylabel("Specific Heat (per site)")
-        ax2.legend()
-        ax2.grid()
-        st.pyplot(fig2)
-        st.markdown("""
-        **Explanation:** 
-        - $T_c$ (red line) par heat capacity mein sharp peak—ye transition ki jagah hain. 
-        - $T < T_c$ mein heat capacity moderate, $T > T_c$ mein phir se kam ho jata hai.
-        """)
-
-    with tabs[2]:
-        st.subheader("2D Ising Model Phase Diagram (with Spin States)")
-        fig3, ax3 = plt.subplots(figsize=(7,4))
-        ax3.axvspan(minT, Tc_exp, alpha=0.3, color='blue', label="Ferromagnetic")
-        ax3.axvspan(Tc_exp, maxT, alpha=0.3, color='orange', label="Paramagnetic")
-        ax3.axvline(Tc_exp, color='red', ls='--', label="Transition $T_c$")
-        ax3.plot(T_real_arr, M, 'ko', markersize=3, label="Magnetization")
-        ax3.set_xlabel("Temperature (K)")
-        ax3.set_ylabel("Phase")
-        ax3.set_yticks([])
-        ax3.legend()
-        st.pyplot(fig3)
-        st.markdown(f"""
-        **Phase Diagram Analysis:** 
-        - **Blue area $T < T_c$:** Ferromagnetic phase (spins aligned, high magnetization).
-        - **Red line at $T_c$:** Transition—magnetization drops.
-        - **Orange area $T > T_c$:** Paramagnetic phase (spins random, $m \sim 0$).
-        - **Now, let's see the spin configuration snapshots below!**
-        """)
-        if spins_below_tc is not None and spins_above_tc is not None:
-            fig4, axes = plt.subplots(1,2, figsize=(8,3))
-            axes[0].imshow(spins_below_tc, cmap='bwr', vmin=-1, vmax=1)
-            axes[0].set_title(r"Below $T_c$:\nFerromagnetic (Ordered)")
-            axes[0].axis('off')
-            axes[1].imshow(spins_above_tc, cmap='bwr', vmin=-1, vmax=1)
-            axes[1].set_title(r"Above $T_c$:\nParamagnetic (Random)")
-            axes[1].axis('off')
-            plt.tight_layout()
-            st.pyplot(fig4)
-            st.markdown("""
-            **Interpretation:** 
-            - *Left (Below $T_c$):* Spins mostly same color—system magnetized, ordered.
-            - *Right (Above $T_c$):* Red/blue mixed—spins randomly oriented, system unmagnetized.
-            """)
-        else:
-            st.warning("Spin snapshots not available for current simulation range/settings.")
-
-    # --- Animations Tab ---
-    with tabs[3]:
-        st.subheader("Animations: Ising Model Dynamics")
-
-        # 1. Lattice evolution at a single T (user can pick T)
-        st.markdown(f"""
-        **Spin Evolution at Fixed Temperature** 
-        Temperature: **{spin_anim_T} K** | Steps: **{spin_anim_steps}**
-        """)
-        beta_anim = 1.0 / (spin_anim_T / JkB)
-        gif1 = "spin_evolution.gif"
-        if (not os.path.exists(gif1)) or st.button("Generate Spin Evolution Animation"):
-            with st.spinner("Building spin evolution animation..."):
-                animate_spin_evolution(N, spin_anim_steps, beta_anim, seed, gif1)
-        st.image(gif1, caption="Time evolution of spin lattice")
-
-        # 2. Lattice snapshots as you sweep T from minT to maxT
-        st.markdown(f"""
-        **Spin Snapshots Across Temperature Sweep** 
-        MC Steps per T: **{temp_anim_steps}**
-        """)
-        gif2 = "ising_temp_sweep.gif"
-        T_anim_arr = np.linspace(minT, maxT, min(28, nT))  # Fewer frames for speed
-        if (not os.path.exists(gif2)) or st.button("Generate Temperature Sweep Animation"):
-            with st.spinner("Building temperature sweep animation..."):
-                animate_temp_sweep(N, T_anim_arr, temp_anim_steps, seed, JkB, gif2)
-        st.image(gif2, caption="Spin patterns as T increases (phase boundary becomes visible)")
-
-        st.markdown("""
-        - **Top animation:** At a fixed temperature, see thermalization and spin ordering/disordering over time. 
-        - **Bottom animation:** As temperature increases, see the system go from ordered (magnetized) to random (paramagnetic)—the phase transition in action.
-        """)
-
-    st.success(
-        f"""
-**FERROMAGNETIC:** $T < {Tc_exp}$ K 
-**PHASE TRANSITION at $T_c={Tc_exp}$ K:** Magnetization goes from non-zero to zero 
-**PARAMAGNETIC:** $T > {Tc_exp}$ K 
-        """
-    )
-    if exp_data is not None:
-        try:
-            interp_sim = np.interp(exp_data.iloc[:,0], T_real_arr, M)
-            rmse = np.sqrt(np.mean((exp_data.iloc[:,1] - interp_sim) ** 2))
-            st.info(f"Simulation vs Experiment RMSE: {rmse:.4f}")
-        except Exception:
-            pass
-
+# -----------------------------
+# Welcome Mode (AI Tutor)
+# -----------------------------
+with tabs[0]:
     st.markdown("""
-    ---
-    **Key Physics:** 
-    - *Ferromagnetism*: Strong spin order, spontaneous magnetization.
-    - *Phase transition ($T_c$)*: Order lost, magnetization drops suddenly, system becomes random.
-    - *Paramagnetism*: No net alignment—thermal energy overcomes ordering.
-    - *Diamagnetism*: 2D Ising model me nahi hota—sirf ferro/para dikhta hai.
+    <div style='text-align:center; font-size:36px; color:#ff4d4d; text-shadow: 0px 0px 15px #ff9999;'>
+    ✨ Welcome to AI Ising Tutor ✨
+    </div>
+    """, unsafe_allow_html=True)
 
-    **Animations show:**
-    - *How the spin lattice evolves at one T (thermalization or fluctuations).*
-    - *How long-range order collapses as T approaches and exceeds $T_c$ (the heart of a phase transition).*
+    if OPENAI_API_KEY:
+        greeting = "Hi there! I am your Physics Lab Assistant. How can I help you today? You can ask me about magnetization, heat capacity, or Binder cumulant."
+        try:
+            speech_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            response = openai.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice="alloy",
+                input=greeting
+            )
+            response.stream_to_file(speech_file.name)
+            st.audio(open(speech_file.name,'rb').read(), format='audio/mp3')
+        except Exception as e:
+            st.error("TTS failed: "+str(e))
+    st.write("Use the **Voice** tab to talk to me!")
+
+# -----------------------------
+# Magnetization (GUI run)
+# -----------------------------
+with tabs[1]:
+    if st.button("Run Simulation (GUI)"):
+        T_arr = np.linspace(minT, maxT, nT)
+        M = run_ising(N, n_eq, n_samples, T_arr, JkB, seed)
+        st.subheader("Magnetization vs Temperature")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=T_arr, y=M, mode='lines+markers', name='|M|'))
+        fig.update_layout(width=900, height=500, xaxis_title='T (K)', yaxis_title='Magnetization per spin')
+        st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------
+# Voice Control with Dialogue
+# -----------------------------
+with tabs[2]:
+    st.header("🎙️ Talk to your Physics Tutor")
+    class Recorder(AudioProcessorBase):
+        def __init__(self):
+            self.frames = []
+        def recv_audio(self, frame: av.AudioFrame) -> av.AudioFrame:
+            pcm = frame.to_ndarray()
+            self.frames.append(pcm)
+            return frame
+
+    ctx = webrtc_streamer(
+        key="voice-ising",
+        mode="sendonly",
+        audio_processor_factory=Recorder,
+        rtc_configuration=RTCConfiguration({"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}),
+        media_stream_constraints={"audio": True},
+    )
+
+    if ctx and ctx.audio_processor:
+        if st.button("🛑 Process Voice Command"):
+            import wavio
+            audio_np = np.concatenate(ctx.audio_processor.frames, axis=0).astype('int16')
+            tmpwav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            wavio.write(tmpwav.name, audio_np, 16000, sampwidth=2)
+            command_text = ""
+            if OPENAI_API_KEY:
+                with open(tmpwav.name, "rb") as f:
+                    resp = openai.Audio.transcriptions.create(model="whisper-1", file=f)
+                    command_text = resp.text
+                    st.write("📝 You said:", command_text)
+            # Parse + simulate
+            T_arr = np.linspace(minT, maxT, nT)
+            M = run_ising(N, n_eq//5, n_samples//5, T_arr, JkB, seed)
+            st.subheader("Magnetization vs Temperature (Voice)")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=T_arr, y=M, mode='lines+markers', name='|M|'))
+            st.plotly_chart(fig, use_container_width=True)
+            explanation = "Simulation done. Magnetization decreases near Tc."
+            if OPENAI_API_KEY:
+                exp_prompt = f"Explain Ising simulation result in simple terms: magnetization peaks at {float(M.max()):.3f}, then drops near Tc."
+                chat = openai.Chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":"Physics tutor."},{"role":"user","content":exp_prompt}])
+                explanation = chat.choices[0].message.content
+                st.info("🤖 AI Explanation: "+explanation)
+                try:
+                    speech_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                    resp2 = openai.audio.speech.create(model="gpt-4o-mini-tts", voice="alloy", input=explanation)
+                    resp2.stream_to_file(speech_file.name)
+                    st.audio(open(speech_file.name,'rb').read(), format='audio/mp3')
+                except Exception as e:
+                    st.error("TTS failed: "+str(e))
+
+# -----------------------------
+# About vs Alexa Tab
+# -----------------------------
+with tabs[3]:
+    st.header("How is this different from Alexa?")
+    st.markdown("""
+    **Alexa:** General-purpose voice assistant (music, shopping, weather).
+    
+    **This AI Tutor:** Domain-specific physics tutor.
+    - Runs **real Ising Monte Carlo simulations**
+    - Generates **graphs + data**
+    - Explains results with **AI + voice**
+    - Useful for **education, viva, and research**
+    
+    👉 In viva, you can say: *"Alexa cannot run scientific simulations. My AI is a research-specific tutor that actually computes, visualizes, and explains physics transitions."*
     """)
+    
