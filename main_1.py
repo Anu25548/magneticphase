@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, RTCConfiguration , WebrtcMode
 import av
 import plotly.graph_objects as go
 import openai
@@ -199,6 +199,7 @@ with tabs[3]:
     👉 In viva, you can say: *"Alexa cannot run scientific simulations. My AI is a research-specific tutor that actually computes, visualizes, and explains physics transitions."*
     """)
     
+
 
 
 
